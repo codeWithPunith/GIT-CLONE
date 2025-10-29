@@ -58,9 +58,14 @@ int main(int argc, char *argv[]) {
     for (int i = 2; i < 40; i++) {
       blob_file_name[i - 2] = blob_sha[i];
     }
+    blob_file_name[38]='\0';
     snprintf(blob_file_path, sizeof(blob_file_path), ".git/objects/%s/%s",
              blob_file_folder, blob_file_name);
-    FILE *blob_file = fopen(blob_file_path, "r");
+    FILE *blob_file = fopen(blob_file_path, "rb");
+    if(!blob_file){
+        fprintf(stderr,"error in opening the blob file");
+        return 1;
+    }
 
     unsigned char buf[1024];
     fread(buf, sizeof(unsigned char), sizeof(buf), blob_file);
