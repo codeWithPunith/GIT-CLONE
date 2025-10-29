@@ -70,7 +70,7 @@ int main(int argc, char *argv[]) {
 
     if(ret!=Z_OK){
          fprintf(stderr, "u got an error in inflate process %s\n", strerror(errno));
-         return 1;
+         return 0;
     }
        while (decompress_buf[i] != '\0') {
       if (decompress_buf[i] == ' ') {
