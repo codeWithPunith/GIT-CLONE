@@ -69,7 +69,8 @@ int main(int argc, char *argv[]) {
     char num_of_bytes[64];
 
     if(ret!=Z_OK){
-        fprintf(perror,"thats an error of zlib inflate process ig");
+         fprintf(stderr, "u got an error in inflate process %s\n", strerror(errno));
+         return 1;
     }
        while (decompress_buf[i] != '\0') {
       if (decompress_buf[i] == ' ') {
