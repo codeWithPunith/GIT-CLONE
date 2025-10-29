@@ -1,49 +1,45 @@
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <errno.h>
 #include <zlib.h>
-#define CHUNK 16384 
 
 int main(int argc, char *argv[]) {
-    printf("argc = %d\n", argc);
-    for (int i = 0; i < argc; i++) {
-        printf("argv[%d] = '%s'\n", i, argv[i]);
-    }
-    // Disable output buffering
-    setbuf(stdout, NULL);
-    setbuf(stderr, NULL);
+  // Disable output buffering
+  setbuf(stdout, NULL);
+  setbuf(stderr, NULL);
 
-    if (argc < 2){
-        fprintf(stderr, "Usage: ./your_program.sh <command> [<args>]\n");
-        return 1;
-    }
-    
-    const char *command = argv[1];
-    
-    if (strcmp(command, "init") == 0) {
-        // You can use print statements as follows for debugging, they'll be visible when running tests.
-        fprintf(stderr, "Logs from your program will appear here!\n");
+  if (argc < 2) {
+    fprintf(stderr, "Usage: ./your_program.sh <command> [<args>]\n");
+    return 1;
+  }
 
-        // TODO: Uncomment the code below to pass the first stage
-         
-         if (mkdir(".git", 0755) == -1 || 
-             mkdir(".git/objects", 0755) == -1 || 
-             mkdir(".git/refs", 0755) == -1){
-             fprintf(stderr, "Failed to create directories: %s\n", strerror(errno));
-             return 1;
-             }
-         
-         FILE *headFile = fopen(".git/HEAD", "w");
-         if (headFile == NULL) {
-             fprintf(stderr, "Failed to create .git/HEAD file: %s\n", strerror(errno));
-             return 1;
-         }
-         fprintf(headFile, "ref: refs/heads/main\n");
-         fclose(headFile);
-         printf("Initialized git directory\n");
-         }else if(strcmp(command, "cat-file") == 0) {
+  const char *command = argv[1];
+
+  if (strcmp(command, "init") == 0) {
+    // You can use print statements as follows for debugging, they'll be visible
+    // when running tests.
+    fprintf(stderr, "Logs from your program will appear here!\n");
+
+    // Uncomment this block to pass the first stage
+    //
+    if (mkdir(".git", 0755) == -1 || mkdir(".git/objects", 0755) == -1 ||
+        mkdir(".git/refs", 0755) == -1) {
+      fprintf(stderr, "Failed to create directories: %s\n", strerror(errno));
+      return 1;
+    }
+
+    FILE *headFile = fopen(".git/HEAD", "w");
+    if (headFile == NULL) {
+      fprintf(stderr, "Failed to create .git/HEAD file: %s\n", strerror(errno));
+      return 1;
+    }
+    fprintf(headFile, "ref: refs/heads/main\n");
+    fclose(headFile);
+
+    printf("Initialized git directory\n");
+  } else if (strcmp(command, "cat-file") == 0) {
     if (argc != 4 || strcmp(argv[2], "-p") != 0) {
       fprintf(stderr, "Usage: ./your_program.sh cat-file -p <hash>\n");
       return 1;
@@ -58,14 +54,9 @@ int main(int argc, char *argv[]) {
     for (int i = 2; i < 40; i++) {
       blob_file_name[i - 2] = blob_sha[i];
     }
-    blob_file_name[38]='\0';
     snprintf(blob_file_path, sizeof(blob_file_path), ".git/objects/%s/%s",
              blob_file_folder, blob_file_name);
-    FILE *blob_file = fopen(blob_file_path, "rb");
-    if(!blob_file){
-        fprintf(stderr,"error in opening the blob file");
-        return 1;
-    }
+    FILE *blob_file = fopen(blob_file_path, "r");
 
     unsigned char buf[1024];
     fread(buf, sizeof(unsigned char), sizeof(buf), blob_file);
@@ -99,11 +90,10 @@ int main(int argc, char *argv[]) {
       i++;
     }
     fclose(blob_file);
-    }else {
-        fprintf(stderr, "Unknown command %s\n", command);
-        return 1;
-    }
-    
-    return 0;
+  } else {
+    fprintf(stderr, "Unknown command %s\n", command);
+    return 1;
+  }
+
+  return 0;
 }
- 
