@@ -48,7 +48,7 @@ int main(int argc, char *argv[]) {
 
     char blob_sha[41], blob_file_folder[3], blob_file_name[39],
         blob_file_path[256];
-    strcpy(blob_sha, argv[3]);
+    strncpy(blob_sha, argv[3],40);
     blob_file_folder[0] = blob_sha[0];
     blob_file_folder[1] = blob_sha[1];
     blob_file_folder[2] = '\0';
