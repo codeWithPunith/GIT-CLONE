@@ -7,6 +7,10 @@
 #define CHUNK 16384 
 
 int main(int argc, char *argv[]) {
+    printf("argc = %d\n", argc);
+    for (int i = 0; i < argc; i++) {
+        printf("argv[%d] = '%s'\n", i, argv[i]);
+    }
     // Disable output buffering
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
@@ -39,25 +43,29 @@ int main(int argc, char *argv[]) {
          fprintf(headFile, "ref: refs/heads/main\n");
          fclose(headFile);
          printf("Initialized git directory\n");
-         }else if(strcmp(command,"git-cat")==0){
-       if(argc!=4 || strcmp(argv[2],"-p")!=0){
-        fprintf(stderr,"Bro seriously u got the error in the GIT_CAT executio get lost ");
-        return 1;
-       }
-       char blob_sha[41],blob_folderName[3],blob_fileName[39],blob_file_path[256];
-       strcpy(argv[3],blob_sha);
-       blob_folderName[0]=blob_sha[0];
-       blob_folderName[1]=blob_sha[1];
-       blob_folderName[2]='\0';
-       for(int i=2;i<=40;i++){
-        blob_fileName[i-2]=blob_sha[i];
-       }
-       snprintf(blob_file_path,sizeof(blob_file_path),".git/objects/%s/%s",blob_folderName,blob_fileName);
-       FILE *blobFile = fopen(blob_file_path,"r");
-       unsigned char buf[1024];
-       fread(buf,sizeof(unsigned char),sizeof(buf),blobFile);
-       //writing ur code of zlib from here. 
-       unsigned char decompress_buf[1024];
+         }else if(strcmp(command, "cat-file") == 0) {
+    if (argc != 4 || strcmp(argv[2], "-p") != 0) {
+      fprintf(stderr, "Usage: ./your_program.sh cat-file -p <hash>\n");
+      return 1;
+    }
+
+    char blob_sha[41], blob_file_folder[3], blob_file_name[39],
+        blob_file_path[256];
+    strcpy(blob_sha, argv[3]);
+    blob_file_folder[0] = blob_sha[0];
+    blob_file_folder[1] = blob_sha[1];
+    blob_file_folder[2] = '\0';
+    for (int i = 2; i < 40; i++) {
+      blob_file_name[i - 2] = blob_sha[i];
+    }
+    snprintf(blob_file_path, sizeof(blob_file_path), ".git/objects/%s/%s",
+             blob_file_folder, blob_file_name);
+    FILE *blob_file = fopen(blob_file_path, "r");
+
+    unsigned char buf[1024];
+    fread(buf, sizeof(unsigned char), sizeof(buf), blob_file);
+
+    unsigned char decompress_buf[1024];
     z_stream stream = {0};
     inflateInit(&stream);
     stream.next_in = buf;
@@ -85,7 +93,7 @@ int main(int argc, char *argv[]) {
       printf("%c", decompress_buf[i + start_pos]);
       i++;
     }
-    fclose(blobFile);
+    fclose(blob_file);
     }else {
         fprintf(stderr, "Unknown command %s\n", command);
         return 1;
