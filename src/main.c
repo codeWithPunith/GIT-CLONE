@@ -4,14 +4,10 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <zlib.h>
-#define CHUNK 16384 
+
 
 int main(int argc, char *argv[]) {
-    printf("argc = %d\n", argc);
-    for (int i = 0; i < argc; i++) {
-        printf("argv[%d] = '%s'\n", i, argv[i]);
-    }
-    // Disable output buffering
+  
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
 
@@ -43,6 +39,7 @@ int main(int argc, char *argv[]) {
          fprintf(headFile, "ref: refs/heads/main\n");
          fclose(headFile);
          printf("Initialized git directory\n");
+
          }else if(strcmp(command, "cat-file") == 0) {
     if (argc != 4 || strcmp(argv[2], "-p") != 0) {
       fprintf(stderr, "Usage: ./your_program.sh cat-file -p <hash>\n");
@@ -58,14 +55,15 @@ int main(int argc, char *argv[]) {
     for (int i = 2; i < 40; i++) {
       blob_file_name[i - 2] = blob_sha[i];
     }
-    blob_file_name[38]='\0';
+   blob_file_name[38]='\0';
     snprintf(blob_file_path, sizeof(blob_file_path), ".git/objects/%s/%s",
              blob_file_folder, blob_file_name);
     FILE *blob_file = fopen(blob_file_path, "rb");
-    if(!blob_file){
-        fprintf(stderr,"error in opening the blob file");
-        return 1;
-    }
+    if (!blob_file) {
+    fprintf(stderr, "Error opening blob file %s: %s\n", blob_file_path, strerror(errno));
+    return 1;
+}
+
 
     unsigned char buf[1024];
     fread(buf, sizeof(unsigned char), sizeof(buf), blob_file);
