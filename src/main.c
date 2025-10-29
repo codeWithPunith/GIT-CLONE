@@ -58,21 +58,18 @@ int main(int argc, char *argv[]) {
        fread(buf,sizeof(unsigned char),sizeof(buf),blobFile);
        //writing ur code of zlib from here. 
        unsigned char decompress_buf[1024];
-           z_stream strm;
-    strm.zalloc = Z_NULL;
-    strm.zfree = Z_NULL;
-    strm.opaque = Z_NULL;
-    strm.avail_in = 0;
-    strm.next_in = Z_NULL;
-    int ret = inflate(&strm,Z_FINISH);
-    int i=0,j=0;
+    z_stream stream = {0};
+    inflateInit(&stream);
+    stream.next_in = buf;
+    stream.avail_in = sizeof(buf);
+    stream.next_out = decompress_buf;
+    stream.avail_out = sizeof(decompress_buf);
+    inflate(&stream, Z_FINISH);
+    inflateEnd(&stream);
+    int i = 0;
+    int j = 0;
     char num_of_bytes[64];
-
-    if(ret!=Z_OK){
-         fprintf(stderr, "u got an error in inflate process %s\n", strerror(errno));
-         return 0;
-    }
-       while (decompress_buf[i] != '\0') {
+    while (decompress_buf[i] != '\0') {
       if (decompress_buf[i] == ' ') {
         while (decompress_buf[j + i] != '\0') {
           num_of_bytes[j] = decompress_buf[j + i];
@@ -89,7 +86,6 @@ int main(int argc, char *argv[]) {
       i++;
     }
     fclose(blobFile);
-
     }else {
         fprintf(stderr, "Unknown command %s\n", command);
         return 1;
