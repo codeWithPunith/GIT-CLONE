@@ -131,6 +131,7 @@ int main(int argc, char *argv[]){
     sprintf(sha1_hex + i * 2, "%02x", sha1_hex[i]);
 }
 sha1_hex[40]='\0';
+printf("%s \n",sha1_hex);
 char dir[64], path[128];
 snprintf(dir, sizeof(dir), ".git/objects/%.2s", sha1_hex);
 snprintf(path, sizeof(path), ".git/objects/%.2s/%s", sha1_hex, sha1_hex + 2);
