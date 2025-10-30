@@ -161,12 +161,12 @@ fwrite(outbuffer, 1, compressed_size, out);
 fclose(out);
 
 printf("complete execution");
-    return 2;
+    return 0;
     }
 
     else {
         fprintf(stderr, "Unknown command %s\n", command);
-        return 1;
+        return 0;
     }
     
     return 0;
