@@ -1,17 +1,21 @@
+#include <errno.h>
+#include <openssl/sha.h>
+#include <openssl/ssl.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <errno.h>
+#include <zconf.h>
 #include <zlib.h>
 
-
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[]){
   
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
 
-    if (argc < 2){
+    if (argc < 2) {
         fprintf(stderr, "Usage: ./your_program.sh <command> [<args>]\n");
         return 1;
     }
@@ -39,7 +43,7 @@ int main(int argc, char *argv[]) {
          fprintf(headFile, "ref: refs/heads/main\n");
          fclose(headFile);
          printf("Initialized git directory\n");
-
+//todo task 2
          }else if(strcmp(command, "cat-file") == 0) {
     if (argc != 4 || strcmp(argv[2], "-p") != 0) {
       fprintf(stderr, "Usage: ./your_program.sh cat-file -p <hash>\n");
@@ -91,13 +95,75 @@ int main(int argc, char *argv[]) {
       i++;
     }
     i = 0;
-    int start_pos = strlen(decompress_buf) + 1;
+    int start_pos = strlen((char *)decompress_buf) + 1;
     while (i < atoi(num_of_bytes)) {
       printf("%c", decompress_buf[i + start_pos]);
       i++;
     }
     fclose(blob_file);
-    }else {
+    }
+    //task 3 of creating sha hash ig
+
+    else if(strcmp(command,"hash-object")==0){
+       
+        FILE *file = fopen(argv[3],"rb");
+        if(file==NULL){
+            fprintf(stderr,"Error in opening the file to get its size in has-object command");
+            return 1;
+        }
+        fseek(file,0,SEEK_END);
+        long fileSize = ftell(file);
+        fclose(file);
+        char content[fileSize+1];
+        FILE *filePointer ;
+        filePointer = fopen(argv[3],"r");
+        char ch;
+        int i=0;
+        while ((ch = fgetc(filePointer)) != EOF) {
+        content[i++]=ch;
+    }
+    content[i]='\0';
+
+     unsigned char hash_input[fileSize+1+6],hash_output[SHA_DIGEST_LENGTH];
+    SHA1(hash_input,strlen((char *)hash_input),hash_output);
+     char sha1_hex[41];
+    for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
+    sprintf(sha1_hex + i * 2, "%02x", sha1_hex[i]);
+}
+sha1_hex[40]='\0';
+char dir[64], path[128];
+snprintf(dir, sizeof(dir), ".git/objects/%.2s", sha1_hex);
+snprintf(path, sizeof(path), ".git/objects/%.2s/%s", sha1_hex, sha1_hex + 2);
+mkdir(".git/objects", 0755);
+mkdir(dir, 0755);
+
+z_stream defstream;
+defstream.zalloc = Z_NULL;
+defstream.zfree = Z_NULL;
+defstream.opaque = Z_NULL;
+
+defstream.avail_in = strlen(content);
+defstream.next_in = (Bytef *)content;
+
+Bytef outbuffer[4096];
+defstream.avail_out = sizeof(outbuffer);
+defstream.next_out = outbuffer;
+
+deflateInit(&defstream, Z_BEST_COMPRESSION);
+deflate(&defstream, Z_FINISH);
+deflateEnd(&defstream);
+
+size_t compressed_size = sizeof(outbuffer) - defstream.avail_out;
+
+FILE *out = fopen(path, "wb");
+fwrite(outbuffer, 1, compressed_size, out);
+fclose(out);
+
+printf("complete execution");
+    return 2;
+    }
+
+    else {
         fprintf(stderr, "Unknown command %s\n", command);
         return 1;
     }
