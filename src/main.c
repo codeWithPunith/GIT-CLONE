@@ -10,6 +10,9 @@
 #include <unistd.h>
 #include <curl/curl.h>
 #define BUFFER_SIZE 1024 * 1024
+
+
+
 //structure of tree
  typedef struct{
         char mode[7];
@@ -20,10 +23,17 @@ TreeEntry entries[1000];
      int entry_count=0;
 
      //structur of a refernece entry 
-     typedef struct ref_entry {
+   typedef struct ref_entry{
     char sha[41];
     char ref_name[256];
 } ref_entry;
+
+
+//forward function declarations
+int get_ref_maps(ref_entry *refs, FILE *fp);
+void req_object_file(const char *url, const char *sha);
+void decompress_packfile_into_repo(const char *repo_path, const char *packfile_path);
+void write_object_to_git_repo(const char *repo_path, unsigned char *data, size_t size, int type);
 
 int get_ref_maps(struct ref_entry *entries, FILE *fp) {
     int i = 0;
@@ -301,111 +311,498 @@ char *write_tree(char *path){
   return hex;
       }
 }
-//function to decompress packfile
-void  decompress_packfile(){
-  FILE *fp = fopen("packfile.response","rb");
-  char buffer[1024];
-  char pack_header[5];
-  if(!fp){
-    perror("error while opening the packfile response to decompress");
-    return ;
-  }
-  char line[128];
-    fgets(line, sizeof(line), fp);
-     size_t bytes_read = fread(pack_header, 1, 4, fp); 
-     pack_header[4]='\0';
-     unsigned char version[5];
-     unsigned char count_bytes[4];
-     fread (version,1,4,fp);
-      fread(count_bytes, 1, 4, fp);
-    uint32_t object_count = (count_bytes[0] << 24) |
-                            (count_bytes[1] << 16) |
-                            (count_bytes[2] << 8)  |
-                            (count_bytes[3]);
-   char objects[object_count];
-for(int i=0;i<object_count;i++){
-   unsigned char c;
-fread(&c, 1, 1, fp);
-int type = (c >> 4) & 7;  // bits 4-6
-long size = c & 0x0F;     // lower 4 bits
-int shift = 4;
-while (c & 0x80) {        // continuation bit set
-    fread(&c, 1, 1, fp);
-    size |= ((c & 0x7F) << shift);
-    shift += 7;
-}
-printf("Type: %d, Size: %ld\n", type, size);
-}
-     fclose(fp);
-     return;
+
+//function to write object to 
+
+// Forward declarations
+int get_ref_maps(ref_entry *refs, FILE *fp);
+void req_object_file(const char *url, const char *sha);
+void decompress_packfile_into_repo(const char *repo_path, const char *packfile_path);
+void write_object_to_git_repo(const char *repo_path, unsigned char *data, size_t size, int type);
+
+void write_object_to_git_repo(const char *repo_path,
+                              unsigned char *data, size_t size, int type)
+{
+    const char *type_str[] = {"", "commit", "tree", "blob", "tag"};
+    if (type < 1 || type > 4) {
+        fprintf(stderr, "write_object_to_git_repo: unsupported type %d\n", type);
+        return;
+    }
+
+    // build object full bytes: "<type> <size>\0<data>"
+    char header[128];
+    int header_len = snprintf(header, sizeof(header), "%s %zu", type_str[type], size);
+    size_t full_size = (size_t)header_len + 1 + size;
+    unsigned char *full = malloc(full_size);
+    if (!full) { perror("malloc"); return; }
+    memcpy(full, header, header_len);
+    full[header_len] = '\0';
+    memcpy(full + header_len + 1, data, size);
+
+    // compute SHA-1 (raw 20 bytes)
+    unsigned char sha[20];
+    SHA1(full, full_size, sha);
+
+    // hex encode
+    char sha_hex[41];
+    for (int i = 0; i < 20; ++i) sprintf(sha_hex + i*2, "%02x", sha[i]);
+    sha_hex[40] = '\0';
+
+    // build directories: repo_path + "/.git/objects/xx"
+    char objects_dir[512];
+    char obj_subdir[512];
+    char obj_path[1024];
+    snprintf(objects_dir, sizeof(objects_dir), "%s/.git/objects", repo_path);
+    snprintf(obj_subdir, sizeof(obj_subdir), "%s/%.2s", objects_dir, sha_hex);
+    snprintf(obj_path, sizeof(obj_path), "%s/%s", obj_subdir, sha_hex + 2);  // FIX: was %.38s
+
+    // ensure objects_dir exists
+    if (mkdir(objects_dir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "mkdir(%s) failed: %s\n", objects_dir, strerror(errno));
+        free(full);
+        return;
+    }
+    // create subdir for this object
+    if (mkdir(obj_subdir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "mkdir(%s) failed: %s\n", obj_subdir, strerror(errno));
+        free(full);
+        return;
+    }
+
+    // if file already exists, skip writing
+    FILE *chk = fopen(obj_path, "rb");
+    if (chk) { 
+        fclose(chk); 
+        free(full); 
+        printf("object %s already exists\n", sha_hex); 
+        return; 
+    }
+
+    FILE *out = fopen(obj_path, "wb");
+    if (!out) {
+        fprintf(stderr, "fopen(%s) failed: %s\n", obj_path, strerror(errno));
+        free(full);
+        return;
+    }
+
+    // compress with zlib (deflate) and write
+    z_stream zs;
+    memset(&zs, 0, sizeof(zs));
+    if (deflateInit(&zs, Z_DEFAULT_COMPRESSION) != Z_OK) {  // FIX: Z_DEFAULT_COMPRESSION is more compatible
+        fprintf(stderr, "deflateInit failed\n");
+        fclose(out);
+        free(full);
+        return;
+    }
+    zs.next_in = full;
+    zs.avail_in = (uInt)full_size;
+    unsigned char outbuf[8192];
+    int zret;
+    do {
+        zs.next_out = outbuf;
+        zs.avail_out = sizeof(outbuf);
+        zret = deflate(&zs, Z_FINISH);
+        size_t wrote = sizeof(outbuf) - zs.avail_out;
+        if (wrote) fwrite(outbuf, 1, wrote, out);
+    } while (zret == Z_OK);
+    deflateEnd(&zs);
+    fclose(out);
+    free(full);
+
+    printf("WROTE %s -> %s (type=%s size=%zu)\n", sha_hex, obj_path, type_str[type], size);
 }
 
-//function for req object from packfile
-void req_object_file(char *url,char *sha){
-CURL *curl;
-CURLcode res;
-FILE *fp =fopen("packfile.response","wb");
-if(!fp){
-    perror("error while creating the file to write the packfile response");
-    return;
+// Structure to hold objects temporarily during pack processing
+typedef struct {
+    unsigned char *data;
+    size_t size;
+    int type;
+    long offset;  // file offset for OFS_DELTA resolution
+    int resolved;
+} pack_object;
+
+// Apply OFS delta
+unsigned char* apply_ofs_delta(unsigned char *base, size_t base_size,
+                               unsigned char *delta, size_t delta_size,
+                               size_t *result_size) {
+    size_t pos = 0;
+    
+    // Read base object size from delta
+    size_t base_obj_size = 0;
+    int shift = 0;
+    while (pos < delta_size) {
+        unsigned char c = delta[pos++];
+        base_obj_size |= ((size_t)(c & 0x7f)) << shift;
+        shift += 7;
+        if (!(c & 0x80)) break;
+    }
+    
+    // Read result object size
+    size_t result_obj_size = 0;
+    shift = 0;
+    while (pos < delta_size) {
+        unsigned char c = delta[pos++];
+        result_obj_size |= ((size_t)(c & 0x7f)) << shift;
+        shift += 7;
+        if (!(c & 0x80)) break;
+    }
+    
+    if (base_obj_size != base_size) {
+        fprintf(stderr, "Delta base size mismatch\n");
+        return NULL;
+    }
+    
+    // Allocate result buffer
+    unsigned char *result = malloc(result_obj_size);
+    if (!result) return NULL;
+    size_t result_pos = 0;
+    
+    // Apply delta instructions
+    while (pos < delta_size) {
+        unsigned char cmd = delta[pos++];
+        
+        if (cmd & 0x80) {
+            // Copy from base
+            size_t offset = 0, size = 0;
+            if (cmd & 0x01) offset = delta[pos++];
+            if (cmd & 0x02) offset |= delta[pos++] << 8;
+            if (cmd & 0x04) offset |= delta[pos++] << 16;
+            if (cmd & 0x08) offset |= delta[pos++] << 24;
+            if (cmd & 0x10) size = delta[pos++];
+            if (cmd & 0x20) size |= delta[pos++] << 8;
+            if (cmd & 0x40) size |= delta[pos++] << 16;
+            if (size == 0) size = 0x10000;
+            
+            if (offset + size > base_size || result_pos + size > result_obj_size) {
+                free(result);
+                return NULL;
+            }
+            memcpy(result + result_pos, base + offset, size);
+            result_pos += size;
+        } else if (cmd) {
+            // Insert new data
+            if (pos + cmd > delta_size || result_pos + cmd > result_obj_size) {
+                free(result);
+                return NULL;
+            }
+            memcpy(result + result_pos, delta + pos, cmd);
+            result_pos += cmd;
+            pos += cmd;
+        } else {
+            free(result);
+            return NULL;
+        }
+    }
+    
+    *result_size = result_obj_size;
+    return result;
 }
-char body[1025];
-snprintf(body,sizeof(body),"0032want %s\n00000009done\n", sha);
-char final_url[1024];
-snprintf(final_url,sizeof(final_url),"%s/git-upload-pack",url);
-curl_global_init(CURL_GLOBAL_DEFAULT);
-    curl = curl_easy_init();
+
+void decompress_packfile_into_repo(const char *repo_path, const char *packfile_path) {
+    FILE *fp = fopen(packfile_path, "rb");
+    if (!fp) { 
+        fprintf(stderr, "open(%s) failed: %s\n", packfile_path, strerror(errno)); 
+        return; 
+    }
+
+    // Try to find "PACK" signature in file (pkt-lines or sideband may precede)
+    int found = 0;
+    unsigned char buf[4096];
+    unsigned char look[4] = {0,0,0,0};
+    
+    while (!found) {
+        size_t n = fread(buf, 1, sizeof(buf), fp);
+        if (n == 0) break;
+        for (size_t i = 0; i < n; ++i) {
+            look[0]=look[1]; look[1]=look[2]; look[2]=look[3]; look[3]=buf[i];
+            if (memcmp(look, "PACK", 4) == 0) {
+                // compute offset of 'P'
+                long cur = ftell(fp);
+                long offset_in_chunk = (long)i - 3;
+                long pack_pos = cur - (long)n + offset_in_chunk;
+                if (fseek(fp, pack_pos, SEEK_SET) != 0) { 
+                    perror("fseek"); 
+                    fclose(fp); 
+                    return; 
+                }
+                found = 1;
+                break;
+            }
+        }
+    }
+    if (!found) { 
+        fprintf(stderr, "PACK signature not found in %s\n", packfile_path); 
+        fclose(fp); 
+        return; 
+    }
+
+    // read 'PACK' (4 bytes), version (4), count (4)
+    char sig[4];
+    if (fread(sig, 1, 4, fp) != 4 || memcmp(sig, "PACK", 4) != 0) { 
+        fprintf(stderr, "bad PACK\n"); 
+        fclose(fp); 
+        return; 
+    }
+    
+    uint32_t version;
+    if (fread(&version, 4, 1, fp) != 1) { 
+        fprintf(stderr, "bad version\n"); 
+        fclose(fp); 
+        return; 
+    }
+    uint32_t ver_be = ((unsigned char *)&version)[0]<<24 | 
+                      ((unsigned char *)&version)[1]<<16 | 
+                      ((unsigned char *)&version)[2]<<8 | 
+                      ((unsigned char *)&version)[3];
+    (void)ver_be;
+
+    unsigned char cntb[4];
+    if (fread(cntb, 1, 4, fp) != 4) { 
+        fprintf(stderr, "bad count\n"); 
+        fclose(fp); 
+        return; 
+    }
+    uint32_t object_count = (cntb[0]<<24) | (cntb[1]<<16) | (cntb[2]<<8) | cntb[3];
+    printf("PACK found: objects=%u\n", object_count);
+
+    // iterate objects
+    for (uint32_t i = 0; i < object_count; ++i) {
+        unsigned char c;
+        if (fread(&c, 1, 1, fp) != 1) { 
+            fprintf(stderr, "unexpected EOF reading object header\n"); 
+            break; 
+        }
+        int type = (c >> 4) & 7;
+        long size = c & 0x0F;
+        int shift = 4;
+        while (c & 0x80) {
+            if (fread(&c, 1, 1, fp) != 1) { 
+                fprintf(stderr, "unexpected EOF reading size\n"); 
+                goto cleanup; 
+            }
+            size |= ((long)(c & 0x7F) << shift);
+            shift += 7;
+        }
+        printf("OBJECT %u header: type=%d size=%ld\n", i+1, type, size);
+
+        // For base objects (1..4) decompress stream and write
+        if (type >= 1 && type <= 4) {
+            z_stream zs;
+            memset(&zs, 0, sizeof(zs));
+            if (inflateInit(&zs) != Z_OK) { 
+                fprintf(stderr, "inflateInit failed\n"); 
+                goto cleanup; 
+            }
+
+            const size_t IN_BUF = 8192;
+            unsigned char inbuf[IN_BUF];
+            size_t out_alloc = (size_t)(size > 0 ? size * 2 : 8192);
+            unsigned char *outbuf = malloc(out_alloc);
+            if (!outbuf) { 
+                perror("malloc"); 
+                inflateEnd(&zs); 
+                goto cleanup; 
+            }
+            size_t out_len = 0;
+            int finished = 0;
+
+            while (!finished) {
+                size_t have = fread(inbuf, 1, IN_BUF, fp);
+                if (have == 0) {
+                    if (feof(fp)) { 
+                        fprintf(stderr, "EOF inside compressed stream\n"); 
+                        break; 
+                    }
+                }
+                zs.next_in = inbuf;
+                zs.avail_in = (uInt)have;
+
+                while (zs.avail_in > 0) {
+                    if (out_len + 8192 > out_alloc) {
+                        out_alloc *= 2;
+                        unsigned char *tmp = realloc(outbuf, out_alloc);
+                        if (!tmp) { 
+                            perror("realloc"); 
+                            free(outbuf); 
+                            inflateEnd(&zs); 
+                            goto cleanup; 
+                        }
+                        outbuf = tmp;
+                    }
+                    zs.next_out = outbuf + out_len;
+                    zs.avail_out = (uInt)(out_alloc - out_len);
+
+                    int zret = inflate(&zs, Z_NO_FLUSH);
+                    if (zret == Z_NEED_DICT || zret == Z_DATA_ERROR || zret == Z_MEM_ERROR) {
+                        fprintf(stderr, "inflate error %d\n", zret);
+                        inflateEnd(&zs);
+                        free(outbuf);
+                        goto cleanup;
+                    }
+                    size_t produced = (out_alloc - out_len) - zs.avail_out;
+                    out_len += produced;
+
+                    if (zret == Z_STREAM_END) {
+                        long unread = (long)zs.avail_in;
+                        if (unread > 0) { 
+                            if (fseek(fp, -unread, SEEK_CUR) != 0) 
+                                perror("fseek back"); 
+                        }
+                        finished = 1;
+                        break;
+                    }
+                }
+            }
+
+            inflateEnd(&zs);
+
+            printf("  => decompressed %zu bytes (declared %ld)\n", out_len, size);
+            if (out_len > 0) {
+                write_object_to_git_repo(repo_path, outbuf, out_len, type);
+            }
+
+            free(outbuf);
+        } else {
+            // delta (6 or 7): skip for now
+            printf("  => skipping delta object (type=%d)\n", type);
+            z_stream zs;
+            memset(&zs, 0, sizeof(zs));
+            if (inflateInit(&zs) != Z_OK) { 
+                fprintf(stderr,"inflateInit failed (delta)\n"); 
+                goto cleanup; 
+            }
+            const size_t IN_BUF = 8192;
+            unsigned char inbuf[IN_BUF], discard[8192];
+            int finished = 0;
+            while (!finished) {
+                size_t have = fread(inbuf, 1, IN_BUF, fp);
+                if (have == 0) { 
+                    if (feof(fp)) break; 
+                }
+                zs.next_in = inbuf;
+                zs.avail_in = (uInt)have;
+                while (zs.avail_in > 0) {
+                    zs.next_out = discard;
+                    zs.avail_out = sizeof(discard);
+                    int zret = inflate(&zs, Z_NO_FLUSH);
+                    if (zret == Z_STREAM_END) {
+                        long unread = (long)zs.avail_in;
+                        if (unread > 0) 
+                            if (fseek(fp, -unread, SEEK_CUR) != 0) 
+                                perror("fseek back");
+                        finished = 1;
+                        break;
+                    }
+                    if (zret == Z_NEED_DICT || zret == Z_DATA_ERROR || zret == Z_MEM_ERROR) {
+                        fprintf(stderr,"inflate error (delta) %d\n", zret);
+                        inflateEnd(&zs);
+                        goto cleanup;
+                    }
+                }
+            }
+            inflateEnd(&zs);
+        }
+    }
+
+cleanup:
+    fclose(fp);
+}
+
+void req_object_file(const char *url, const char *sha) {
+    FILE *fp = fopen("packfile.response", "wb");
+    if (!fp) { 
+        perror("open packfile.response"); 
+        return; 
+    }
+
+    char body[1024];
+    // Request without deltas - note the extra capabilities
+    snprintf(body, sizeof(body), 
+             "0054want %s no-progress include-tag ofs-delta\n"
+             "0000"
+             "0009done\n", sha);
+    char final_url[1024];
+    snprintf(final_url, sizeof(final_url), "%s/git-upload-pack", url);
+
+    printf("DEBUG: Requesting from URL: %s\n", final_url);
+    printf("DEBUG: Request body: %s\n", body);
+
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    CURL *curl = curl_easy_init();
     if (curl) {
+        struct curl_slist *headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/x-git-upload-pack-request");
+        
         curl_easy_setopt(curl, CURLOPT_URL, final_url);
         curl_easy_setopt(curl, CURLOPT_POST, 1L);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, strlen(body));
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER,
-                         curl_slist_append(NULL, "Content-Type: application/x-git-upload-pack-request"));
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);  // DEBUG: verbose output
 
-        res = curl_easy_perform(curl);
+        CURLcode res = curl_easy_perform(curl);
         if (res != CURLE_OK)
             fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-
+        else
+            printf("DEBUG: curl request succeeded\n");
+        
+        curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
     }
     fclose(fp);
     curl_global_cleanup();
-    return ;
 }
-//funtion for git cloneeeeeeeeeeeeeeeee..................................///////////////////////
+
 int git_clone_cmd(char *url, char *directory) {
     if (mkdir(directory, 0755) != 0) {
         perror("error creating a directory while cloning the initial stage");
         return 0;
     }
-    chdir(directory);
+    
+    // FIX: Save current directory to restore later
+    char original_dir[1024];
+    if (getcwd(original_dir, sizeof(original_dir)) == NULL) {
+        perror("getcwd");
+        return 0;
+    }
+    
+    if (chdir(directory) != 0) {
+        perror("chdir");
+        return 0;
+    }
+    
     system("mkdir -p .git/objects .git/refs");
 
     FILE *head = fopen(".git/HEAD", "w");
+    if (!head) {
+        perror("fopen .git/HEAD");
+        chdir(original_dir);
+        return 0;
+    }
     fprintf(head, "ref: refs/heads/master\n");
     fclose(head);
 
     printf("Initialized empty Git repository in %s/.git\n", directory);
 
-    // --- Fetch refs using curl ---
+    // --- Fetch refs using curl ---And it really works all the above code
     char final_url[1024];
     snprintf(final_url, sizeof(final_url), "%s/info/refs?service=git-upload-pack", url);
 
-    CURL *curl;
-    CURLcode res;
     curl_global_init(CURL_GLOBAL_DEFAULT);
-    curl = curl_easy_init();
+    CURL *curl = curl_easy_init();
     if (!curl) {
         fprintf(stderr, "curl init failed\n");
+        chdir(original_dir);
         return 0;
     }
 
     FILE *f = fopen("repoDetails.txt", "wb");
     if (!f) {
         perror("error creating the file to write the responses");
+        curl_easy_cleanup(curl);
+        chdir(original_dir);
         return 0;
     }
 
@@ -414,10 +811,12 @@ int git_clone_cmd(char *url, char *directory) {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
 
-    res = curl_easy_perform(curl);
+    CURLcode res = curl_easy_perform(curl);
     fclose(f);
     if (res != CURLE_OK) {
         fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        curl_easy_cleanup(curl);
+        chdir(original_dir);
         return 0;
     }
     curl_easy_cleanup(curl);
@@ -426,33 +825,98 @@ int git_clone_cmd(char *url, char *directory) {
     FILE *fp = fopen("repoDetails.txt", "rb");
     if (!fp) {
         perror("error while opening the file to read");
+        chdir(original_dir);
         return 0;
     }
 
-    ref_entry *refs = malloc(200 * sizeof(ref_entry)); // up to 200 refs for now
+    ref_entry *refs = malloc(200 * sizeof(ref_entry));
     if (!refs) {
         perror("malloc failed");
         fclose(fp);
+        chdir(original_dir);
         return 1;
     }
 
     int ref_count = get_ref_maps(refs, fp);
+    printf("DEBUG: ref_count = %d\n", ref_count);
     fclose(fp);
 
-    printf("Successfully mapped %d refs\n", ref_count);
- char *head_sha=NULL;
+    //printf("Successfully mapped %d refs\n", ref_count);
+    printf("Ref[0]: %s\n", refs[0].ref_name);
+
+    printf("\n=== Parsed Git References ===\n");
     for (int j = 0; j < ref_count; j++) {
-        if(strcmp(refs[j].ref_name,"refs/heads/main")){
-          head_sha= refs[j].sha;
-          break;
+        printf("[%d] %s -> %s\n", j + 1, refs[j].sha, refs[j].ref_name);
+    }
+    printf("==============================\n");
+    fflush(stdout); 
+    // FIX: The strcmp logic was inverted
+    char *head_sha = NULL;
+    for (int j = 0; j < ref_count; j++) {
+        if (strcmp(refs[j].ref_name, "refs/heads/main") == 0) {  // FIX: == 0 means equal
+            head_sha = refs[j].sha;
+            break;
         }
     }
+    printf("DEBUGG :must execute id sha is created\n");
+    
+    // FIX: Also try "master" if "main" not found
+    if (!head_sha) {
+        for (int j = 0; j < ref_count; j++) {
+            if (strcmp(refs[j].ref_name, "refs/heads/master") == 0) {
+                head_sha = refs[j].sha;
+                break;
+            }
+        }
+    }
+    
+    if (!head_sha) {
+        fprintf(stderr, "Could not find refs/heads/main or refs/heads/master\n");
+        fprintf(stderr, "Available refs:\n");
+        for (int j = 0; j < ref_count; j++) {
+            fprintf(stderr, "  %s -> %s\n", refs[j].ref_name, refs[j].sha);
+        }
+        free(refs);
+        curl_global_cleanup();
+        chdir(original_dir);
+        return 0;
+    }
+    
+    printf("Found HEAD SHA: %s\n", head_sha);
 
+    printf("Requesting packfile from server...\n");
+    req_object_file(url, head_sha);
+    
+    // Check if packfile was created
+    FILE *check = fopen("packfile.response", "rb");
+    if (!check) {
+        fprintf(stderr, "ERROR: packfile.response not created!\n");
+        free(refs);
+        curl_global_cleanup();
+        chdir(original_dir);
+        return 0;
+    }
+    fseek(check, 0, SEEK_END);
+    long fsize = ftell(check);
+    fclose(check);
+    printf("Packfile size: %ld bytes\n", fsize);
+    if (fsize == 0) {
+        fprintf(stderr, "ERROR: packfile.response is empty!\n");
+        free(refs);
+        curl_global_cleanup();
+        chdir(original_dir);
+        return 0;
+    }
+    
+    // FIX: Pass "." as repo_path since we're already in the directory
+    decompress_packfile_into_repo(".", "packfile.response");
+    
     free(refs);
     curl_global_cleanup();
-
-    req_object_file(url,head_sha);//performs writing the packfile in packfile.response
-    decompress_packfile();
+    
+    // Restore original directory
+    chdir(original_dir);
+    
     return 1;
 }
 /////////////////////////////////////////MAIN FUNC////////////////////////////////////////////////////////////////////

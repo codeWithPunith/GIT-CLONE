@@ -1,0 +1,5 @@
+clang -Wall -g main.c \                                                                                            ─╯
+  -I/opt/homebrew/opt/openssl@3/include \
+  -L/opt/homebrew/opt/openssl@3/lib \
+  -lcurl -lssl -lcrypto -lz \
+  -o main
